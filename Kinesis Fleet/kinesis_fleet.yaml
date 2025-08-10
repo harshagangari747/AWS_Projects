@@ -1,0 +1,152 @@
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  streamIngest:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: streamIngest
+      CodeUri: src/Function
+      Handler: index.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 30
+      Tracing: Active
+      Events:
+        streamApiGWPOSTlocation:
+          Type: Api
+          Properties:
+            Path: /location
+            Method: POST
+            RestApiId: !Ref streamApiGW
+      Environment:
+        Variables:
+          LOCATIONSTREAM_STREAM_NAME: !Ref LocationStream
+          LOCATIONSTREAM_STREAM_ARN: !GetAtt LocationStream.Arn
+      Policies:
+        - KinesisCrudPolicy:
+            StreamName: !Ref LocationStream
+        - KinesisStreamReadPolicy:
+            StreamName: !Ref LocationStream
+  streamIngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${streamIngest}
+  streamApiGW:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub
+        - ${ResourceName} From Stack ${AWS::StackName}
+        - ResourceName: streamApiGW
+      StageName: Prod
+      DefinitionBody:
+        openapi: "3.0"
+        info: {}
+        paths:
+          /location:
+            post:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${streamIngest.Arn}/invocations
+              responses: {}
+            get:
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${locationDbHandler.Arn}/invocations
+              responses: {}
+      EndpointConfiguration: REGIONAL
+      TracingEnabled: true
+      Cors:
+        MaxAge: 5
+  LocationStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+      StreamModeDetails:
+        StreamMode: ON_DEMAND
+  streamHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: streamHandler
+      CodeUri: src/Function2
+      Handler: handler.handler
+      Runtime: python3.12
+      MemorySize: 512
+      Timeout: 30
+      Tracing: Active
+      Events:
+        LocationStream:
+          Type: Kinesis
+          Properties:
+            Stream: !GetAtt LocationStream.Arn
+            StartingPosition: TRIM_HORIZON
+            BatchSize: 1
+      Environment:
+        Variables:
+          LOCATIONTABLE_TABLE_NAME: !Ref locationtable
+          LOCATIONTABLE_TABLE_ARN: !GetAtt locationtable.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref locationtable
+  streamHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${streamHandler}
+  locationtable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: lastUpdated
+          AttributeType: S
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: lastUpdated
+          KeyType: RANGE
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+  locationDbHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: !Sub
+        - Stack ${AWS::StackName} Function ${ResourceName}
+        - ResourceName: locationDbHandler
+      CodeUri: src/Function2
+      Handler: handler.handler
+      Runtime: python3.12
+      MemorySize: 256
+      Timeout: 30
+      Tracing: Active
+      Environment:
+        Variables:
+          LOCATIONTABLE_TABLE_NAME: !Ref locationtable
+          LOCATIONTABLE_TABLE_ARN: !GetAtt locationtable.Arn
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref locationtable
+      Events:
+        streamApiGWGETlocation:
+          Type: Api
+          Properties:
+            Path: /location
+            Method: GET
+            RestApiId: !Ref streamApiGW
+  locationDbHandlerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${locationDbHandler}
